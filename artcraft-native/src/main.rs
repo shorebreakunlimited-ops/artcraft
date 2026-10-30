@@ -5,6 +5,7 @@
 mod app;
 mod backend;
 mod feed;
+mod mcp;
 mod models;
 mod overlays;
 mod pages;
@@ -17,6 +18,16 @@ const APP_ID: &str = "ai.artcraft.native";
 
 fn main() -> eframe::Result {
   env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info")).init();
+  // `--mcp`: serve MCP on stdio instead of opening the window (logs stay on stderr).
+  let args: Vec<String> = std::env::args().collect();
+  if args.iter().any(|a| a == "--mcp") {
+    let result = mcp::Scope::from_args(&args).map_err(anyhow::Error::msg).and_then(mcp::run);
+    if let Err(err) = result {
+      log::error!("MCP server failed: {err}");
+      std::process::exit(1);
+    }
+    return Ok(());
+  }
   let mut viewport = egui::ViewportBuilder::default().with_title("ArtCraft").with_app_id(APP_ID).with_inner_size([1440.0, 900.0]).with_min_inner_size([960.0, 640.0]);
   if let Some(icon) = app_icon() {
     viewport = viewport.with_icon(icon);

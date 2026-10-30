@@ -35,6 +35,7 @@ The workspace's default member is the Tauri app, so pass `-p artcraft_native`.
 | `backend::media_cache` | Thumbnails and previews: downloaded and decoded off-thread, evicted when unused |
 | `backend::audio`   | One clip at a time: reference previews, feed tracks (pause, seek, volume), waveforms |
 | `backend::providers` | Midjourney and fal: accounts, submitting, and a worker that finishes jobs into the library |
+| `mcp`              | `--mcp`: headless MCP server on stdio (image and video generation tools)       |
 | `models`           | Model catalog from OmniGen listings, plus names, families and limits           |
 | `prompt_box`       | The shared prompt box: editor, reference deck, keyframes, pickers, model selector |
 | `pages`            | Create Image, Video and Audio, Home, Library, and the shared page shell        |
@@ -96,6 +97,42 @@ Feed and lightbox:
   One track plays at a time and stops when you leave the page. Audio offers Share and Download.
 - **Lightbox.** Prev/next with the arrow keys, prompt copy and details. Actions are Recreate, Make
   Video, Download, Share and Delete. Audio plays in a panel with the full-size player.
+
+## MCP server
+
+`artcraft-native --mcp` runs headless as a [Model Context Protocol](https://modelcontextprotocol.io)
+server on stdio, so agents can generate with the user's ArtCraft account. No window opens. It uses
+the session the app saved (see Sign-in), read on every call, so signing in to the app takes effect
+without restarting the server.
+
+The tool set depends on the scope: `--scope photo|film|all`, or by default the executable's name
+(`photocraft` → images, `filmcraft` → video, anything else → both).
+
+| Tool                | Scope       | What it does                                                         |
+|---------------------|-------------|----------------------------------------------------------------------|
+| `account`           | all         | Who is signed in, and their credits                                  |
+| `list_image_models` | photo       | Image models and the options each takes                              |
+| `generate_image`    | photo       | Prompt, model options, reference images (paths or `mf_…` tokens)     |
+| `list_video_models` | film        | Video models, durations, keyframe and reference support              |
+| `generate_video`    | film        | Prompt, keyframes or references, duration, sound                     |
+| `get_job`           | all         | Job status and results; can wait and download                        |
+
+Generate calls validate options against the model, then wait up to `wait_seconds` (default 120)
+for results and return their CDN links, downloading them into `save_dir` when given.
+`estimate_only` prices a request without spending credits. Requests are built the same way as on
+the Create Image and Create Video pages.
+
+`script/artcraft/install_mcp_apps.sh` (macOS) builds the binary and installs it as
+`/Applications/PhotoCraft.app` and `/Applications/FilmCraft.app`. That matches this client config:
+
+```json
+{
+  "mcpServers": {
+    "artcraft-photo": { "command": "/Applications/PhotoCraft.app/Contents/MacOS/photocraft", "args": ["--mcp"] },
+    "artcraft-film": { "command": "/Applications/FilmCraft.app/Contents/MacOS/filmcraft", "args": ["--mcp"] }
+  }
+}
+```
 
 ## Diagnostics
 
