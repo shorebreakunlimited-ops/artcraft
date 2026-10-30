@@ -116,6 +116,15 @@ The tool set depends on the scope: `--scope photo|film|all`, or by default the e
 | `list_video_models` | film        | Video models, durations, keyframe and reference support              |
 | `generate_video`    | film        | Prompt, keyframes or references, duration, sound                     |
 | `get_job`           | all         | Job status and results; can wait and download                        |
+| `split_thumbnail`   | photo       | 50/50 split-screen still from two images or video frames (FFmpeg)    |
+| `assemble_sequence` | film        | Renders clips into one sequence with ambient, SFX and crossfades     |
+
+`assemble_sequence` and `split_thumbnail` run locally with FFmpeg and spend no credits. The
+sequence puts clips in order on V1, each clip's own audio on A1 (default −12 dB) and an optional
+SFX file under each clip on A2 (default −3 dB), with crossfades between clips (default 0.5 s), at
+1080p24 by default. It writes the `.mp4` and a `.timeline.json` with every clip's timecodes.
+FFmpeg is found through `ARTCRAFT_FFMPEG_DIR`, the PATH, `/opt/homebrew/bin`, `/usr/local/bin` or
+`~/.local/bin`; MCP clients started from the Dock pass a minimal PATH, so those folders matter.
 
 Generate calls validate options against the model, then wait up to `wait_seconds` (default 120)
 for results and return their CDN links, downloading them into `save_dir` when given.

@@ -6,6 +6,7 @@
 //! protocol messages only (logs go to stderr). Requests run concurrently, so a long `wait` on a
 //! generation doesn't hold up `ping` or other calls.
 
+mod timeline;
 mod tools;
 
 use std::path::Path;
@@ -246,9 +247,9 @@ mod tests {
         server.tool_definitions().iter().map(|t| t["name"].as_str().unwrap().to_owned()).collect::<Vec<_>>()
       };
       let photo = names(Scope::Photo);
-      assert!(photo.contains(&"generate_image".to_owned()) && !photo.contains(&"generate_video".to_owned()));
+      assert!(photo.contains(&"generate_image".to_owned()) && photo.contains(&"split_thumbnail".to_owned()) && !photo.contains(&"generate_video".to_owned()));
       let film = names(Scope::Film);
-      assert!(film.contains(&"generate_video".to_owned()) && !film.contains(&"generate_image".to_owned()));
+      assert!(film.contains(&"generate_video".to_owned()) && film.contains(&"assemble_sequence".to_owned()) && !film.contains(&"generate_image".to_owned()));
       assert!(names(Scope::All).iter().any(|n| n == "get_job"));
     }
   }

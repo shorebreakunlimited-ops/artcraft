@@ -17,6 +17,7 @@ use serde::Deserialize;
 use serde_json::{Map, Value, json};
 
 use super::Scope;
+use super::timeline;
 use crate::backend::wire::{BatchMedia, Job, JobPhase, MediaFile, SessionInfo, SessionJobs};
 use crate::backend::{Api, Modality, api_message, http_client, job_tokens, session};
 use crate::models::{self, ModelInfo};
@@ -107,10 +108,12 @@ impl Server {
     if self.scope.images() {
       tools.push(list_models_tool(Modality::Image));
       tools.push(generate_image_tool());
+      tools.push(timeline::split_thumbnail_tool());
     }
     if self.scope.videos() {
       tools.push(list_models_tool(Modality::Video));
       tools.push(generate_video_tool());
+      tools.push(timeline::assemble_sequence_tool());
     }
     tools.push(get_job_tool());
     tools
@@ -128,6 +131,14 @@ impl Server {
       },
       "generate_video" if self.scope.videos() => match parse_args::<GenerateVideoArgs>(arguments) {
         Ok(args) => self.generate_video(args).await,
+        Err(err) => Err(err),
+      },
+      "split_thumbnail" if self.scope.images() => match parse_args::<timeline::SplitThumbnailArgs>(arguments) {
+        Ok(args) => timeline::split_thumbnail(args).await,
+        Err(err) => Err(err),
+      },
+      "assemble_sequence" if self.scope.videos() => match parse_args::<timeline::AssembleSequenceArgs>(arguments) {
+        Ok(args) => timeline::assemble_sequence(args).await,
         Err(err) => Err(err),
       },
       "get_job" => match parse_args::<GetJobArgs>(arguments) {
@@ -482,6 +493,7 @@ pub fn instructions(scope: Scope) -> String {
     "Generates {what} with the user's ArtCraft account. Generating spends the user's ArtCraft credits: \
      use estimate_only to price a request first when cost matters, and `account` to see the balance. \
      Model options differ per model; call the list_*_models tool and pass only values a model offers. \
+     assemble_sequence and split_thumbnail edit local files with FFmpeg and cost nothing. \
      Generate calls wait up to wait_seconds (default {DEFAULT_WAIT_SECS}) for results; if they're still \
      running, call get_job with the returned job_tokens. Pass save_dir to download results locally. \
      The session comes from the ArtCraft app: if a call says you're not signed in, ask the user to sign in there."
@@ -699,7 +711,7 @@ fn modality_path(modality: Modality) -> &'static str {
 }
 
 /// `~/x` → the home folder's `x`.
-fn expand_home(path: &str) -> PathBuf {
+pub(super) fn expand_home(path: &str) -> PathBuf {
   match path.strip_prefix("~/") {
     Some(rest) => directories::UserDirs::new().map_or_else(|| PathBuf::from(path), |d| d.home_dir().join(rest)),
     None => PathBuf::from(path),

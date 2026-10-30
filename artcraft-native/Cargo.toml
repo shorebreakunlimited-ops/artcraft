@@ -39,7 +39,7 @@ rodio = { version = "0.20", default-features = false, features = ["symphonia-all
 serde.workspace = true
 serde_json.workspace = true
 tempfile.workspace = true
-tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "fs", "io-std", "io-util"] }
+tokio = { workspace = true, features = ["rt-multi-thread", "sync", "time", "fs", "io-std", "io-util", "process"] }
 url.workspace = true
 uuid = { workspace = true, features = ["v4"] }
 
