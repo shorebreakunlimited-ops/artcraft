@@ -83,7 +83,10 @@ struct Clip {
   video: PathBuf,
   duration: f64,
   has_audio: bool,
+  /// Mono audio is copied to both channels instead of taking the upmix's −3 dB.
+  ambient_mono: bool,
   sfx: Option<PathBuf>,
+  sfx_mono: bool,
   sfx_gain_db: f64,
 }
 
@@ -113,6 +116,16 @@ pub async fn assemble_sequence(args: AssembleSequenceArgs) -> Result<Value, Stri
   for (i, clip) in args.clips.iter().enumerate() {
     let video = existing_file(&clip.video, &format!("Clip {} video", i + 1))?;
     let sfx = clip.sfx.as_deref().map(|s| existing_file(s, &format!("Clip {} sfx", i + 1))).transpose()?;
+    let sfx_mono = match &sfx {
+      Some(path) => {
+        let probe = tools.probe(path).await?;
+        if !probe.has_audio {
+          return Err(format!("{} has no audio stream.", path.display()));
+        }
+        probe.audio_mono
+      },
+      None => false,
+    };
     let probe = tools.probe(&video).await?;
     if !probe.has_video {
       return Err(format!("{} has no video stream.", video.display()));
@@ -122,7 +135,7 @@ pub async fn assemble_sequence(args: AssembleSequenceArgs) -> Result<Value, Stri
     if probe.duration <= needed {
       return Err(format!("{} is {:.2}s, too short for {crossfade}s crossfades.", video.display(), probe.duration));
     }
-    clips.push(Clip { video, duration: probe.duration, has_audio: probe.has_audio, sfx, sfx_gain_db: clip.sfx_gain_db.unwrap_or(default_sfx_gain) });
+    clips.push(Clip { video, duration: probe.duration, has_audio: probe.has_audio, ambient_mono: probe.audio_mono, sfx, sfx_mono, sfx_gain_db: clip.sfx_gain_db.unwrap_or(default_sfx_gain) });
   }
 
   let output = match &args.output_path {
@@ -241,6 +254,7 @@ struct Probe {
   duration: f64,
   has_video: bool,
   has_audio: bool,
+  audio_mono: bool,
 }
 
 impl Tools {
@@ -263,7 +277,7 @@ impl Tools {
   }
 
   async fn probe(&self, path: &Path) -> Result<Probe, String> {
-    let output = Command::new(&self.ffprobe).args(["-v", "error", "-show_entries", "format=duration:stream=codec_type", "-of", "json"]).arg(path).output().await.map_err(|e| format!("ffprobe: {e}"))?;
+    let output = Command::new(&self.ffprobe).args(["-v", "error", "-show_entries", "format=duration:stream=codec_type,channels", "-of", "json"]).arg(path).output().await.map_err(|e| format!("ffprobe: {e}"))?;
     if !output.status.success() {
       return Err(format!("Couldn't read {}: {}", path.display(), String::from_utf8_lossy(&output.stderr).trim()));
     }
@@ -274,8 +288,10 @@ impl Tools {
 fn parse_probe(stdout: &[u8]) -> Option<Probe> {
   let v: Value = serde_json::from_slice(stdout).ok()?;
   let duration = v.pointer("/format/duration")?.as_str()?.parse::<f64>().ok().filter(|d| *d > 0.0)?;
-  let kinds: Vec<&str> = v.get("streams")?.as_array()?.iter().filter_map(|s| s.get("codec_type")?.as_str()).collect();
-  Some(Probe { duration, has_video: kinds.contains(&"video"), has_audio: kinds.contains(&"audio") })
+  let streams = v.get("streams")?.as_array()?;
+  let of_kind = |kind: &str| streams.iter().find(|s| s.get("codec_type").and_then(Value::as_str) == Some(kind));
+  let audio = of_kind("audio");
+  Some(Probe { duration, has_video: of_kind("video").is_some(), has_audio: audio.is_some(), audio_mono: audio.and_then(|s| s.get("channels")?.as_u64()) == Some(1) })
 }
 
 async fn run(mut command: Command, what: &str) -> Result<(), String> {
@@ -301,9 +317,8 @@ fn sequence_args(seq: &Sequence, clips: &[Clip], output: &Path) -> Vec<String> {
     let (w, h, fps) = (seq.width, seq.height, seq.fps);
     graph.push(format!("[{video_input}:v]trim=duration={d},setpts=PTS-STARTPTS,scale={w}:{h}:force_original_aspect_ratio=decrease,pad={w}:{h}:(ow-iw)/2:(oh-ih)/2:black,setsar=1,fps={fps},format=yuv420p[v{i}]"));
 
-    let level = format!("aresample={AUDIO_RATE},aformat=sample_fmts=fltp:channel_layouts=stereo");
     if clip.has_audio && seq.keep_ambient {
-      graph.push(format!("[{video_input}:a]atrim=duration={d},asetpts=PTS-STARTPTS,{level},volume={}dB,apad,atrim=duration={d}[amb{i}]", db(seq.ambient_gain_db)));
+      graph.push(format!("[{video_input}:a]atrim=duration={d},asetpts=PTS-STARTPTS,{},volume={}dB,apad,atrim=duration={d}[amb{i}]", stereo_input(clip.ambient_mono), db(seq.ambient_gain_db)));
     } else {
       graph.push(format!("anullsrc=r={AUDIO_RATE}:cl=stereo,atrim=duration={d},aformat=sample_fmts=fltp:channel_layouts=stereo[amb{i}]"));
     }
@@ -312,7 +327,7 @@ fn sequence_args(seq: &Sequence, clips: &[Clip], output: &Path) -> Vec<String> {
         let sfx_input = inputs;
         args.extend(["-i".to_owned(), sfx.display().to_string()]);
         inputs += 1;
-        graph.push(format!("[{sfx_input}:a]{level},volume={}dB,apad,atrim=duration={d},asetpts=PTS-STARTPTS[sfx{i}]", db(clip.sfx_gain_db)));
+        graph.push(format!("[{sfx_input}:a]{},volume={}dB,apad,atrim=duration={d},asetpts=PTS-STARTPTS[sfx{i}]", stereo_input(clip.sfx_mono), db(clip.sfx_gain_db)));
         graph.push(format!("[amb{i}][sfx{i}]amix=inputs=2:duration=first:normalize=0[a{i}]"));
       },
       None => graph.push(format!("[amb{i}]anull[a{i}]")),
@@ -413,6 +428,13 @@ fn timeline(name: &str, seq: &Sequence, clips: &[Clip], output: &Path) -> Value 
 
 // --- Helpers -------------------------------------------------------------------------------
 
+/// Conforms an input's audio to 48 kHz float stereo. Mono is copied to both channels: FFmpeg's
+/// own mono-to-stereo upmix lowers each channel by 3 dB, which would make "−12 dB" mean −15.
+fn stereo_input(mono: bool) -> String {
+  let copy = if mono { "pan=stereo|c0=c0|c1=c0," } else { "" };
+  format!("{copy}aresample={AUDIO_RATE},aformat=sample_fmts=fltp:channel_layouts=stereo")
+}
+
 /// The frame for a resolution name and orientation (16:9 landscape by default).
 fn frame_size(resolution: Option<&str>, orientation: Option<&str>) -> Result<(u32, u32), String> {
   let short = match resolution.unwrap_or("1080p") {
@@ -510,6 +532,19 @@ mod tests {
     }
 
     #[test]
+    fn mono_inputs_are_copied_to_both_channels() {
+      let mut mono = clip("a.mp4", 8.0, true, Some("a.wav"));
+      mono.ambient_mono = true;
+      mono.sfx_mono = true;
+      let graph = filter(&sequence_args(&sequence(0.5), &[mono, clip("b.mp4", 6.0, true, Some("b.wav"))], Path::new("out.mp4")));
+      assert!(graph.contains("[0:a]atrim=duration=8.000,asetpts=PTS-STARTPTS,pan=stereo|c0=c0|c1=c0,aresample=48000"), "{graph}");
+      assert!(graph.contains("[1:a]pan=stereo|c0=c0|c1=c0,aresample=48000"), "{graph}");
+      // The second clip's inputs are stereo and untouched.
+      assert!(graph.contains("[2:a]atrim=duration=6.000,asetpts=PTS-STARTPTS,aresample=48000"), "{graph}");
+      assert!(graph.contains("[3:a]aresample=48000"), "{graph}");
+    }
+
+    #[test]
     fn silent_clips_get_a_silent_bed() {
       let args = sequence_args(&sequence(0.0), &[clip("a.mp4", 4.0, false, None), clip("b.mp4", 4.0, true, None)], Path::new("out.mp4"));
       let graph = filter(&args);
@@ -568,7 +603,10 @@ mod tests {
     fn probes_read_length_and_streams() {
       let probe = parse_probe(br#"{"streams":[{"codec_type":"video"},{"codec_type":"audio"}],"format":{"duration":"8.041667"}}"#).unwrap();
       assert!(probe.has_video && probe.has_audio && (probe.duration - 8.041667).abs() < 1e-9);
+      assert!(!probe.audio_mono);
       assert!(parse_probe(br#"{"streams":[],"format":{}}"#).is_none());
+      let mono = parse_probe(br#"{"streams":[{"codec_type":"audio","channels":1}],"format":{"duration":"2.0"}}"#).unwrap();
+      assert!(mono.has_audio && mono.audio_mono && !mono.has_video);
     }
 
     #[test]
@@ -583,7 +621,7 @@ mod tests {
   }
 
   fn clip(video: &str, duration: f64, has_audio: bool, sfx: Option<&str>) -> Clip {
-    Clip { video: PathBuf::from(video), duration, has_audio, sfx: sfx.map(PathBuf::from), sfx_gain_db: -3.0 }
+    Clip { video: PathBuf::from(video), duration, has_audio, ambient_mono: false, sfx: sfx.map(PathBuf::from), sfx_mono: false, sfx_gain_db: -3.0 }
   }
 
   fn filter(args: &[String]) -> String {
