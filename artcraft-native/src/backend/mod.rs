@@ -207,7 +207,7 @@ impl Backend {
     let root = session::data_root();
     let host = session::api_host(&root);
     let creds = session::load(&root);
-    let http = reqwest::Client::builder().user_agent(USER_AGENT).gzip(true).timeout(Duration::from_secs(60)).build().unwrap_or_default();
+    let http = http_client();
     let (accounts, jobs) = (ProviderAccounts::load(&root), JobStore::load(&root));
     let creds = Arc::new(RwLock::new(creds));
     rt.spawn(Worker { host: host.clone(), creds: creds.clone(), http: http.clone(), accounts: accounts.clone(), jobs: jobs.clone(), tx: tx.clone(), ctx: ctx.clone() }.run());
@@ -790,20 +790,20 @@ impl BackendHandle {
 }
 
 /// One request's worth of host, credentials and HTTP client.
-struct Api {
-  host: ApiHost,
-  creds: Option<StorytellerCredentialSet>,
-  http: reqwest::Client,
+pub(crate) struct Api {
+  pub(crate) host: ApiHost,
+  pub(crate) creds: Option<StorytellerCredentialSet>,
+  pub(crate) http: reqwest::Client,
 }
 
 impl Api {
   /// A GET with the desktop app's identity headers and cookies, decoded leniently.
-  async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
+  pub(crate) async fn get_json<T: DeserializeOwned>(&self, path: &str) -> Result<T, String> {
     self.request_json(reqwest::Method::GET, path, None).await
   }
 
   /// Any JSON call with the desktop app's identity headers and cookies, decoded leniently.
-  async fn request_json<T: DeserializeOwned>(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<T, String> {
+  pub(crate) async fn request_json<T: DeserializeOwned>(&self, method: reqwest::Method, path: &str, body: Option<Value>) -> Result<T, String> {
     let url = format!("{}{path}", self.host.to_api_hostname_and_scheme());
     let mut request = self.http.request(method, &url).header("Accept", "application/json").header("Origin", self.host.request_origin());
     if let Some(body) = body {
@@ -866,6 +866,11 @@ impl Api {
   }
 }
 
+/// The API client every request goes through (desktop identity, gzip, a generous timeout).
+pub(crate) fn http_client() -> reqwest::Client {
+  reqwest::Client::builder().user_agent(USER_AGENT).gzip(true).timeout(Duration::from_secs(60)).build().unwrap_or_default()
+}
+
 fn store_session(root: &Path, creds: &Arc<RwLock<Option<Credentials>>>, session: String) {
   let visitor = creds.read().ok().and_then(|c| c.as_ref().and_then(|c| c.visitor.clone()));
   let new = Credentials { session, visitor };
@@ -890,7 +895,7 @@ fn fal_cost_body(fields: &Map<String, Value>) -> Value {
 }
 
 /// All job tokens a generate call created (`inference_job_token` plus `all_job_tokens`).
-fn job_tokens(response: &Value) -> Vec<String> {
+pub(crate) fn job_tokens(response: &Value) -> Vec<String> {
   let mut tokens: Vec<String> = response.get("inference_job_token").and_then(Value::as_str).map(str::to_owned).into_iter().collect();
   for t in response.get("all_job_tokens").and_then(Value::as_array).into_iter().flatten().filter_map(Value::as_str) {
     if !tokens.iter().any(|x| x == t) {
